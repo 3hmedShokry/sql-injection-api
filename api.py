@@ -5,43 +5,66 @@ import numpy as np
 import pickle
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.sequence import pad_sequences
+import os
+import requests
 
-# إعداد FastAPI
 app = FastAPI(title="SQL Injection Detection API")
 
-# تحميل النموذج المدرب
+# Google Drive file IDs
+MODEL_ID = "1IsPUNwRavK1MY_RCV1DrwuY9ibpTOIdW"
+TOKENIZER_ID = "1YQah6VKWm3-Q3Hzo5Gcgezhp3sE5m1vc"
+
+def download_file_from_google_drive(file_id, destination):
+    URL = "https://docs.google.com/uc?export=download"
+    session = requests.Session()
+
+    response = session.get(URL, params={'id': file_id}, stream=True)
+    token = None
+    for key, value in response.cookies.items():
+        if key.startswith('download_warning'):
+            token = value
+
+    if token:
+        params = {'id': file_id, 'confirm': token}
+        response = session.get(URL, params=params, stream=True)
+
+    CHUNK_SIZE = 32768
+    with open(destination, "wb") as f:
+        for chunk in response.iter_content(CHUNK_SIZE):
+            if chunk:
+                f.write(chunk)
+
+# Download model and tokenizer if not present
+if not os.path.exists("bilstm_model.h5"):
+    print("Downloading model...")
+    download_file_from_google_drive(MODEL_ID, "bilstm_model.h5")
+
+if not os.path.exists("tokenizer.pkl"):
+    print("Downloading tokenizer...")
+    download_file_from_google_drive(TOKENIZER_ID, "tokenizer.pkl")
+
 model = load_model("bilstm_model.h5")
 
-# تحميل Tokenizer الحقيقي اللي اتدرب عليه الموديل
 with open("tokenizer.pkl", "rb") as f:
     tokenizer = pickle.load(f)
 
-# إعدادات التسلسل
-max_sequence_length = 100  # يجب أن تطابق نفس القيمة وقت التدريب
+max_sequence_length = 100
 
-# هيكل البيانات المستلمة
 class InputData(BaseModel):
     sentence: str
 
-# نقطة النهاية للتنبؤ
 @app.post("/predict")
 async def predict(data: InputData):
     sentence = data.sentence
-
-    # تحويل الجملة إلى تسلسل أرقام + padding
     sequence = tokenizer.texts_to_sequences([sentence])
     padded = pad_sequences(sequence, maxlen=max_sequence_length, padding='post', truncating='post')
-
-    # التنبؤ من الموديل
     prediction = model.predict(np.array(padded))
     label = int(prediction[0][0] > 0.7)
-
     return {
         "sentence": sentence,
-        "prediction": label,       # 1 = SQLi, 0 = Safe
+        "prediction": label,
         "confidence": float(prediction[0][0])
     }
 
-# لتشغيل السيرفر مباشرة من الملف
 if __name__ == "__main__":
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
